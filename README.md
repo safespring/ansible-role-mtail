@@ -12,7 +12,18 @@ Only systemd-based systems are supported for now. Pull-requests are welcome.
 Role Variables
 --------------
 
-A description of the settable variables for this role should go here, including any variables that are in defaults/main.yml, vars/main.yml, and any variables that can/should be set via parameters to the role. Any variables that are read from other roles and/or the global scope (ie. hostvars, group vars, etc.) should be mentioned here as well.
+### mtail_version
+
+mtail release version, defaults to newest version in the [page](https://github.com/google/mtail/releases).
+
+### mtail_args
+
+Raw argument to `mtail` program, defaults to `-progs /usr/local/etc/mtail -logs /var/log/syslog`
+
+There is a default mtail program directory, which contains a simple log line counter for `NetworkManager`.
+
+When you set this value, don't forget setting progs argument.
+
 
 Dependencies
 ------------
@@ -26,7 +37,8 @@ Including an example of how to use your role (for instance, with variables passe
 
     - hosts: servers
       roles:
-         - { role: username.rolename, x: 42 }
+      - role: hkwi.mtail
+        mtail_version: v3.0.0-rc26
 
 License
 -------
