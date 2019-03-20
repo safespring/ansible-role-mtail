@@ -1,0 +1,4 @@
+---
+# defaults file for mtail
+mtail_version: v3.0.0-rc25
+mtail_args: -progs /usr/local/etc/mtail -logs /var/log/syslog

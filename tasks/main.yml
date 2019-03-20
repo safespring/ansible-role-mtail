@@ -1,0 +1,41 @@
+---
+- name: Put mtail executable
+  uri:
+    url: "https://github.com/google/mtail/releases/download/{{ mtail_version }}/mtail_{{ mtail_version }}_{{ ansible_system | lower }}_amd64"
+    dest: /usr/local/bin/mtail
+    creates: /usr/local/bin/mtail
+    status_code:
+    - 200
+    - 304
+  when: ansible_architecture == "x86_64"
+  register: rc
+
+- debug: msg={{rc}}
+
+- name: chmod +x
+  file:
+    path: /usr/local/bin/mtail
+    mode: u+x
+  when: rc.changed
+
+- name: Put systemd mtail.service unit
+  template:
+    src: service.j2
+    dest: /etc/systemd/system/mtail.service
+
+- name: Put systemd unit
+  template:
+    src: default.j2
+    dest: /etc/default/mtail
+
+- name: Copy mtail programs
+  copy:
+    src: mtail
+    dest: /usr/local/etc/
+
+- name: Enable mtail.service
+  systemd:
+    name: mtail.service
+    daemon_reload: yes
+    enabled: yes
+    state: started
