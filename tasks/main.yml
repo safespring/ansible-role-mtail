@@ -10,8 +10,6 @@
   when: ansible_architecture == "x86_64"
   register: rc
 
-- debug: msg={{rc}}
-
 - name: chmod +x
   file:
     path: /usr/local/bin/mtail
