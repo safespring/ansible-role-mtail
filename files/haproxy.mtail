@@ -1,0 +1,139 @@
+# Match only haproxy.log
+getfilename() !~ /haproxy\.log$/ {
+  stop
+}
+
+# Syslog decorator
+def syslog {
+  /^(?P<date>(?P<legacy_date>\w+\s+\d+\s+\d+:\d+:\d+)|(?P<rfc3339_date>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.\d+[+-]\d{2}:\d{2}))/ +
+  /\s+(?:\w+@)?(?P<hostname>[\w\.-]+)\s+(?P<application>[\w\.-]+)(?:\[(?P<pid>\d+)\])?:\s+(?P<message>.*)/ {
+    len($legacy_date) > 0 {
+      strptime($2, "Jan _2 15:04:05")
+    }
+    len($rfc3339_date) > 0 {
+      strptime($rfc3339_date, "2006-01-02T03:04:05-0700")
+    }
+    next
+  }
+}
+
+# Temporary variables
+hidden gauge connect_time_ms
+hidden gauge client_query_time_ms
+hidden gauge queue_time_ms
+hidden gauge response_time_ms
+
+@syslog {
+  # Default log format.
+  counter haproxy_connections_total by frontend_name, mode
+  /Connect from .* to .* \((?P<frontend_name>\w+)\/(?P<mode>\w+)\)$/ {
+    haproxy_connections_total[$frontend_name][$mode]++
+  }
+
+  # https/1: SSL handshake failure
+  counter haproxy_ssl_handshake_failures_total
+  /https\/.+: SSL handshake failure/ {
+    haproxy_ssl_handshake_failures_total++
+  }
+
+  # Haproxy active connections.
+  gauge haproxy_active_connections
+
+  # GitLab http log format.
+  counter http_requests_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter haproxy_http_nosrv_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter haproxy_http_request_backend_duration_seconds_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter haproxy_http_request_client_duration_seconds_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter http_request_duration_seconds_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter http_request_sent_bytes_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter http_request_received_bytes_total by frontend_name_transport, ssl_version, backend_name, status_code, request_method, http_version
+  counter http_request_backend_retries_total by backend_name, request_method
+  histogram haproxy_http_response_duration_seconds buckets 0.0, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0 by backend_name, server_name
+  # log-format %ci:%cp\ [%t]\ %ft\ %sslv\ %b/%s\ %Tq/%Tw/%Tc/%Tr/%Tt\ %ST\ %B\ %U\ %CC\ %CS\ %tsc\ %ac/%fc/%bc/%sc/%rc\ %sq/%bq\ %hr\ %hs\ %{+Q}r
+  /\d+(\.\d+){3}:\d+ / + # %ci:%cp
+  /\[\d{2}\/\w{3}\/\d{4}:\d{2}:\d{2}:\d{2}\.\d{3}\] / + # [%t]
+  /(?P<frontend_name_transport>http\w?~?) / + # %ft
+  /(?P<ssl_version>[A-Za-z0-9\.-]+) / + # %sslv
+  /(?P<backend_name>\w+)\/<?(?P<server_name>[<>\w\.-]+)>? / + # %b/%s
+  /(?P<client_query_time>-?\d+)\// + # %Tq/
+  /(?P<queue_time_ms>-?\d+)\// + # %Tw/
+  /(?P<connect_time>-?\d+)\// + # %Tc/
+  /(?P<response_time>-?\d+)\// + # %Tr/
+  /(?P<total_time_ms>\d+) / + # %Tt
+  /(?P<status_code>\d{3}) / + # %ST
+  /(?P<bytes_read>\d+) / + # %B (from server to client)
+  /(?P<bytes_uploaded>\d+) / + # %U (from client to server)
+  /(?P<captured_request_cookie>[\w-]+) / + # %CC
+  /(?P<captured_response_cookie>[\w-]+) / + # %CS
+  /(?P<termination_state>....) / + # %tsc with cookie status
+  /(?P<actconn>\d+)\// + # %ac/
+  /(?P<feconn>\d+)\// + # %fc/ (frontend concurrent connections)
+  /(?P<beconn>\d+)\// + # %bc/ (backend concurrent connections)
+  /(?P<srv_conn>\d+)\// + # %sc/ (server concurrent connections)
+  /(?P<retries>\d+) / + # %rc
+  /(?P<srv_queue>\d+)\/(?P<backend_queue>\d+) / + # %sq/%bq
+  /({.*} )?/ + # %hr %hs
+  /"(?P<request_method>[A-Z]+) (?P<URI>\S+) (?P<http_version>HTTP\/[0-9\.]+)"/ + # %{+Q}r
+  /$/ {
+    # Handle connect_time (%Tc):
+    #   Tc: total time to establish the TCP connection to the server. It's the time
+    #   elapsed between the moment the proxy sent the connection request, and the
+    #   moment it was acknowledged by the server, or between the TCP SYN packet and
+    #   the matching SYN/ACK packet in return. The value "-1" means that the
+    #   connection never established.
+    $connect_time =~ /^-\d+$/ {
+      connect_time_ms = 0.0
+    } else {
+      connect_time_ms = $connect_time
+    }
+    # Handle client_query_time (%Tq):
+    #   Tq: total time to get the client request from the accept date or since the
+    #   emission of the last byte of the previous response (HTTP mode only). It's
+    #   exactly equal to Th + Ti + TR unless any of them is -1, in which case it
+    #   returns -1 as well. This timer used to be very useful before the arrival of
+    #   HTTP keep-alive and browsers' pre-connect feature. It's recommended to drop
+    #   it in favor of TR nowadays, as the idle time adds a lot of noise to the
+    #   reports.
+    $client_query_time =~ /^-\d+$/ {
+      client_query_time_ms = 0.0
+    } else {
+      client_query_time_ms = $client_query_time
+    }
+    # Handle response_time (%Tr):
+    $response_time =~ /^-\d+$/ {
+      response_time_ms = 0.0
+    } else {
+      response_time_ms = $response_time
+    }
+
+
+    # Total http requests.
+    http_requests_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version]++
+
+    /<NOSRV>/ {
+      # Requests handled by the http server.
+      haproxy_http_nosrv_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version]++
+    } else {
+      # Requests handled by a backend.
+
+      # http request times.
+      haproxy_http_request_backend_duration_seconds_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version] += connect_time_ms / 1000.0
+      haproxy_http_request_client_duration_seconds_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version] += client_query_time_ms / 1000.0
+      http_request_duration_seconds_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version] += $total_time_ms / 1000.0
+
+      # Request duration histogram.
+      haproxy_http_response_duration_seconds[$backend_name][$server_name] = response_time_ms / 1000.0
+
+      # Total http sent bytes.
+      http_request_sent_bytes_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version] += $bytes_read
+      # Total http received bytes.
+      http_request_received_bytes_total[$frontend_name_transport][$ssl_version][$backend_name][$status_code][$request_method][$http_version] += $bytes_uploaded
+
+      # Total http backend retries.
+      http_request_backend_retries_total[$backend_name][$request_method] += $retries
+    }
+    # Active connections.
+    haproxy_active_connections = $actconn
+  }
+
+}

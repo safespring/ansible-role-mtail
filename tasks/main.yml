@@ -2,8 +2,8 @@
 - name: Put mtail executable
   uri:
     url: "https://github.com/google/mtail/releases/download/{{ mtail_version }}/mtail_{{ mtail_version }}_{{ ansible_system | lower }}_amd64"
-    dest: /usr/local/bin/mtail
-    creates: /usr/local/bin/mtail
+    dest: /usr/local/sbin/mtail
+    creates: /usr/local/sbin/mtail
     status_code:
     - 200
     - 304
@@ -12,7 +12,7 @@
 
 - name: chmod +x
   file:
-    path: /usr/local/bin/mtail
+    path: /usr/local/sbin/mtail
     mode: u+x
   when: rc.changed
 
@@ -28,8 +28,9 @@
 
 - name: Copy mtail programs
   copy:
-    src: mtail
-    dest: /usr/local/etc/
+    src: "{{ item }}"
+    dest: /usr/local/mtail/
+  with_items: "{{ mtail_progs }}"
 
 - name: Enable mtail.service
   systemd:
